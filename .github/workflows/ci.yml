@@ -99,6 +99,13 @@ jobs:
             echo '```'
           } >> "$SUMMARY"
 
-          # 只发一条 annotation 作为指针，避免触发 10 条上限而把关键信息挤掉
-          echo "::error::UBSan suite failed (exit=${RC})${{ matrix.cxx }} — 详情见本 step 的 Summary"
+          # GitHub 每个 step 最多只保留 10 条 annotation：逐行走 annotation 会在前几个测试就
+          # 把上限占满，反而把真正失败的那条挤掉（上一轮 annotation 正好停在 test_hook）。
+          # 因此把关键信息压成「一条」多行 annotation（换行转成 %0A 转义），条数恒定、不超限。
+          PER_TEST=$(awk '/^=== /{t=$2} /^exit=/{printf "%s=%s ", t, substr($0, index($0,"=")+1)}' /tmp/check.log)
+          DETAIL=$(grep -nE "FAIL|runtime error|UndefinedBehaviorSanitizer|SUMMARY:|Assertion|Segmentation fault|error:" /tmp/check.log | head -12)
+          MSG="compiler=$(${{ matrix.cxx }} --version 2>/dev/null | head -1) nproc=$(nproc) ulimit_n=$(ulimit -n)"
+          MSG="${MSG} | per-test: ${PER_TEST:-none} | detail: ${DETAIL:-none}"
+          MSG=$(printf '%s' "$MSG" | sed 's/%/%25/g' | sed ':a;N;$!ba;s/\r//g; s/\n/%0A/g')
+          echo "::error::UBSan suite failed (exit=${RC}) :: ${MSG}"
           exit $RC
