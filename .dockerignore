@@ -1,0 +1,16 @@
+# 排除 Windows 平台预编译产物与本地元数据，保证镜像内从源码干净重建
+.workbuddy
+*.o
+test_fiber
+test_scheduler
+test_timer
+test_ioscheduler
+test_hook
+test_io_concurrency
+test_fiber_exception
+test_stack_overflow
+echo_server
+bench_http_server
+bench_native_http_server
+代码规范与Review清单.md
+03_C++_协程库.md

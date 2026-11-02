@@ -1,0 +1,39 @@
+# ==== 构建产物（Makefile / g++，WSL 侧生成） ====
+*.o
+*.a
+*.so
+*.out
+
+# 测试与示例可执行文件
+/test_fiber
+/test_scheduler
+/test_timer
+/test_ioscheduler
+/test_hook
+/echo_server
+/test_fiber_exception
+/test_io_concurrency
+/test_stack_overflow
+
+# 压测可执行文件
+/bench_http_server
+/bench_native_http_server
+
+# CMake 构建目录（如改用 CMake）
+build/
+cmake-build-*/
+
+# ==== 编辑器 / 系统文件 ====
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# 工作区内部目录（含记忆/审查日志，勿公开）
+.workbuddy/
+
+# Windows 编译产物（如在本机 g++/MinGW 编译）
+*.exe
+*.obj

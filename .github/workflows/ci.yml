@@ -1,0 +1,39 @@
+name: CI
+
+# 在每次 push（main/master）与 pull_request 时自动编译并跑全量测试。
+# 复用仓库已有的 Makefile：常规编译 + UBSan 构建全量测试（tests/run_tests.sh）。
+# 平台用 GitHub 托管的 ubuntu-latest（原生 Linux，自带 g++/clang 与 ucontext/epoll/pthread）。
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.cxx }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [ g++, clang++ ]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure compiler is available
+        run: |
+          command -v ${{ matrix.cxx }} >/dev/null 2>&1 || {
+            sudo apt-get update -y
+            sudo apt-get install -y clang
+          }
+          ${{ matrix.cxx }} --version
+
+      - name: Regular build (no sanitizer)
+        # 快速暴露普通编译错误/警告；-O0 默认，覆盖常规发布前路径。
+        run: make clean && make CXX=${{ matrix.cxx }}
+
+      - name: Build & run full test suite with UBSan
+        # make check 会 clean 后以 -fsanitize=undefined -fno-sanitize-recover=all -g -O1 重建，
+        # 并运行 tests/run_tests.sh（含 fork 隔离的栈溢出测试、IO 并发 CPU 断言等）。
+        run: make check CXX=${{ matrix.cxx }}

@@ -1,0 +1,23 @@
+name: ThreadSanitizer (experimental)
+
+# 实验性：手动触发（Actions 标签页 → 选择本工作流 → Run workflow）。
+# 不绑定 push/PR，避免 TSan 当前与 dlsym hook / 协程切换未完全适配导致的误报阻塞常规合并。
+#
+# 启用为正式门禁前需要做的适配：
+#   1. 在 src/fiber.cpp 的协程切换处接入 TSan 的 fiber 注解
+#      （__tsan_switch_to_fiber(prev_fiber, next_fiber)），让 TSan 理解用户态协程切换；
+#   2. 厘清 TSan 拦截 read/write/recv/send 与本库 hook 的交互（必要时对自管道 IO 加抑制）。
+# 详见代码规范与Review清单.md「六、CI 配置」一节。
+on:
+  workflow_dispatch:
+
+jobs:
+  tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build & run tests with ThreadSanitizer (experimental)
+        run: make check-tsan
+        continue-on-error: true   # 实验性，不阻塞；暴露竞态线索，待适配后转正
