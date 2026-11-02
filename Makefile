@@ -69,11 +69,23 @@ bench_native_http_server: bench/native_http_server.cpp
 # 绕过本库的 hook（write 不受影响），导致依赖协程挂起语义的 IO 测试失效；
 # UBSan 无此问题，可完整覆盖并全部通过。fiber.cpp 已内置协程栈切换的 ASan 标注，
 # 如需 ASan 可手动追加 -fsanitize=address 构建。
-# -fno-sanitize-recover=all：UB 触发即非零退出，保证 check 结果可信。
+# -fno-sanitize-recover=all：真 UB 触发即非零退出，保证 check 结果可信。
+#
+# 编译器对齐：clang 的 -fsanitize=undefined 默认额外启用 unsigned-integer-overflow，
+# 而该检查捕获的是 unsigned 类型回绕（C/C++ 标准中的定义良好行为，并非 UB），
+# gcc 的 undefined 组默认不含它、也不接受该选项名；为避免 clang 因良性回绕误 abort、
+# 并让 g++/clang 的 check 行为一致，仅对 unsigned-integer-overflow 使用 recover。
+UBSAN_CXXFLAGS = -fsanitize=undefined -fno-sanitize-recover=all -g -O1
+UBSAN_LDFLAGS  = -fsanitize=undefined -fno-sanitize-recover=all
+ifneq (,$(findstring clang,$(CXX)))
+  UBSAN_CXXFLAGS += -fsanitize-recover=unsigned-integer-overflow
+  UBSAN_LDFLAGS  += -fsanitize-recover=unsigned-integer-overflow
+endif
+
 check:
 	$(MAKE) clean
-	$(MAKE) CXXFLAGS="$(CXXFLAGS) -fsanitize=undefined -fno-sanitize-recover=all -g -O1" \
-	       LDFLAGS="$(LDFLAGS) -fsanitize=undefined -fno-sanitize-recover=all"
+	$(MAKE) CXXFLAGS="$(CXXFLAGS) $(UBSAN_CXXFLAGS)" \
+	       LDFLAGS="$(LDFLAGS) $(UBSAN_LDFLAGS)"
 	bash tests/run_tests.sh
 
 # 实验性 ThreadSanitizer 构建 + 全部测试
