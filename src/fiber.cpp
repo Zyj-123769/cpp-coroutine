@@ -10,8 +10,22 @@
 
 // ASan 支持：ucontext 切换会跳转栈，必须用 __sanitizer_start/finish_switch_fiber
 // 告知 ASan 栈边界，否则协程栈访问会被误报（如 stack-buffer-overflow）
-#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+// 检测方式：GCC 在 -fsanitize=address 时定义 __SANITIZE_ADDRESS__；Clang 用
+// __has_feature(address_sanitizer)。注意 __has_feature 是 Clang 专属内建——
+// GCC 13+ 也认识该标识符，但仅支持有限 feature 名，若直接写进 ||/&& 表达式，
+// GCC 会尝试求值 __has_feature(address_sanitizer) 并因不支持而报
+// “missing binary operator” 错误。故用 #ifdef __clang__ 把 Clang 专属判断整段
+// 隔离：被跳过的预处理块不会展开其中的宏，从而彻底避免 GCC 求值它。
+#if defined(__SANITIZE_ADDRESS__)
 #define SYLAR_HAS_ASAN 1
+#endif
+#if defined(__clang__)
+  #if __has_feature(address_sanitizer)
+  #define SYLAR_HAS_ASAN 1
+  #endif
+#endif
+
+#ifdef SYLAR_HAS_ASAN
 #include <sanitizer/common_interface_defs.h>
 #endif
 
