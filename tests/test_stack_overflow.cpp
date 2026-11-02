@@ -15,15 +15,27 @@ using namespace sylar;
 
 static const char kChildLog[] = "/tmp/stack_overflow_child.log";
 
-// 深度递归消耗栈（volatile + 局部数组防优化）
-static void recurse(int depth, volatile char* sink) {
+// 深度递归消耗栈。
+//
+// 关键约束：这里必须是「非尾递归」。
+//   若写成 `recurse(depth - 1, sink); return;`，这是纯尾调用，clang 在 -O1 就会启用
+//   sibling-call 优化把它折叠成一个循环 —— 栈帧不再增长，递归可以「跑完」而不溢出，
+//   子进程正常退出，测试反而误报 FAIL。历史上 CI 的 clang 18 正是如此
+//   （gcc 未折叠，所以该失败只在 clang 侧暴露）。
+//   因此：递归调用之后继续使用返回值与 pad，使调用不再是尾调用；
+//   并且 noinline 防止被内联后重新形成尾调用。
+__attribute__((noinline))
+static int recurse(int depth, volatile char* sink) {
     volatile char pad[64];
     pad[0] = (char)(depth & 0x7f);   // 强制占用栈帧
     *sink = (char)(pad[0] + depth);
     if (depth <= 0) {
-        return;
+        return pad[0];
     }
-    recurse(depth - 1, sink);
+    int sub = recurse(depth - 1, sink);   // 非尾调用：返回值需在返回后继续使用
+    pad[1] = (char)(sub & 0x7f);          // 调用后仍使用 pad，保证栈帧跨调用存活
+    *sink = (char)(pad[1] + sub);
+    return sub + 1;
 }
 
 int main() {
@@ -42,12 +54,16 @@ int main() {
         volatile char sink = 0;
         Fiber::ptr f(new Fiber([&]() {
             printf("  [child] recursion on 16KB stack, expect crash...\n");
+            fflush(stdout);
             recurse(1 << 24, &sink);   // 极深递归，必溢出
             printf("  [child] recursion returned (unexpected!)\n");
+            fflush(stdout);
+            _exit(3);   // 递归跑完却没溢出：说明递归被优化成循环了，测试本身失效
         }, 16 * 1024, true));
         f->call();
         printf("  [child] fiber returned (unexpected!)\n");
-        _exit(0);
+        fflush(stdout);
+        _exit(4);
     }
 
     int status = 0;
@@ -71,6 +87,11 @@ int main() {
     if (clear_error) {
         printf("PASS: stack overflow -> clear error (SIGSEGV guard page / ASan report), no silent corruption\n");
         return 0;
+    }
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 3) {
+        printf("FAIL: recursion returned without overflowing — 递归被优化器折叠成循环"
+               "（尾调用/sibling-call 优化），本测试已失去意义\n");
+        return 1;
     }
     printf("FAIL: expected clear stack-overflow error, got status=0x%x\n", status);
     return 1;
