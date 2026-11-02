@@ -5,15 +5,11 @@
 *.out
 
 # 测试与示例可执行文件
-/test_fiber
-/test_scheduler
-/test_timer
-/test_ioscheduler
-/test_hook
+# 用通配而不是逐个列举：新增测试用例时不必再回来补这一行
+# （原先手写清单漏掉了 test_multithread，构建产物会混进 git status）。
+# 注意只锚定仓库根目录，源码在 tests/ 目录下，不会被误伤。
+/test_*
 /echo_server
-/test_fiber_exception
-/test_io_concurrency
-/test_stack_overflow
 
 # 压测可执行文件
 /bench_http_server
