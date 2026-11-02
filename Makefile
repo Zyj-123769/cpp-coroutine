@@ -75,6 +75,14 @@ bench_native_http_server: bench/native_http_server.cpp
 # 而该检查捕获的是 unsigned 类型回绕（C/C++ 标准中的定义良好行为，并非 UB），
 # gcc 的 undefined 组默认不含它、也不接受该选项名；为避免 clang 因良性回绕误 abort、
 # 并让 g++/clang 的 check 行为一致，仅对 unsigned-integer-overflow 使用 recover。
+#
+# 运行时依赖：clang 的 -fsanitize=undefined 需要 compiler-rt 运行时
+# （libclang_rt.ubsan_standalone*.a）。它在 Debian/Ubuntu 上由 libclang-rt-<ver>-dev 提供，
+# 而该包只是 libclang-common-<ver>-dev 的 Recommends —— 若用 --no-install-recommends
+# 安装 clang（CI 镜像常见做法），就会缺失，链接期报
+# "cannot find libclang_rt.ubsan_standalone-x86_64.a"，check 直接 Error 2。
+# 若遇此错，安装对应运行时即可：
+#   sudo apt-get install -y libclang-rt-$(clang++ -dumpversion | cut -d. -f1)-dev
 UBSAN_CXXFLAGS = -fsanitize=undefined -fno-sanitize-recover=all -g -O1
 UBSAN_LDFLAGS  = -fsanitize=undefined -fno-sanitize-recover=all
 ifneq (,$(findstring clang,$(CXX)))

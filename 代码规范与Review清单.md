@@ -164,6 +164,9 @@
   1. 常规编译 `make clean && make CXX=<compiler>`（快速暴露普通编译错误/警告）；
   2. UBSan 全量测试 `make check CXX=<compiler>`（`-fsanitize=undefined -fno-sanitize-recover=all -g -O1` 重建 + `tests/run_tests.sh`，任一测试非零退出即失败）。
 - **复用性**：完全基于既有 `Makefile`，本地 `make check` 与 CI 行为一致。
+- **已修复的 CI 红灯（2026-11-02，两轮排查）**：
+  - **真实根因（最终定位）**：`clang++` 的 `make check` 失败 **并非代码 UB，而是链接期错误** —— `/usr/bin/ld: cannot find .../libclang_rt.ubsan_standalone(-cxx)-x86_64.a`，`make` 以 `Error 2` 退出，UBSan 检查根本没跑起来。原因：`gcc` 的 UBSan 运行时随 `libgcc`（硬依赖）安装，开箱即可链接；而 `clang` 的 UBSan 运行时在 compiler-rt（`libclang-rt-<ver>-dev`），该包只是 `libclang-common-<ver>-dev` 的 **Recommends**。runner 镜像普遍以 `--no-install-recommends` 构建，漏装此包 → 链接失败。**修复**：`ci.yml` 新增 “Ensure clang UBSan runtime” 步骤，先探测能否链接，缺则 `sudo apt-get install -y libclang-rt-$(clang++ -dumpversion | cut -d. -f1)-dev`。**验证**：本地用 `gcc:bookworm` + clang14 容器复现，修复前 `Error 2`，装 `libclang-rt-14-dev` 后 clang UBSan 构建下 8 个测试全过、`ALL TESTS PASS`（`test_io_concurrency` CPU 7.97%、`test_timer` 100/499/1000ms、`test_stack_overflow` 保护页 SIGSEGV 均符合预期）。
+  - **排查中的一次误判（保留以防再踩）**：最初怀疑 `unsigned-integer-overflow`（clang 的 `undefined` 组默认多启、gcc 不支持该选项名）。已在 `Makefile` 对 clang 追加 `-fsanitize-recover=unsigned-integer-overflow` —— 该改动**本身合理**（unsigned 回绕是定义良好行为，避免良性回绕误 abort、对齐两编译器行为），但**并非**当时红灯的原因；真因是上面的运行时缺失。
 
 ### 6.2 实验性 `tsan.yml` + `make check-tsan`
 - **触发**：仅 `workflow_dispatch` 手动触发，不绑定 push/PR，避免误报阻塞合并。

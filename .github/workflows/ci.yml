@@ -25,9 +25,32 @@ jobs:
         run: |
           command -v ${{ matrix.cxx }} >/dev/null 2>&1 || {
             sudo apt-get update -y
-            sudo apt-get install -y clang
+            sudo apt-get install -y ${{ matrix.cxx }}
           }
           ${{ matrix.cxx }} --version
+
+      - name: Ensure clang UBSan runtime is available
+        # 根因说明（此前 clang job 失败的真正原因，并非代码 UB）：
+        #   gcc 的 UBSan 运行时随 libgcc 一起安装（硬依赖），-fsanitize=undefined 开箱即可链接；
+        #   而 clang 的 UBSan 运行时位于 compiler-rt（libclang_rt.ubsan_standalone*.a），
+        #   它在 libclang-common-<ver>-dev 中只是 Recommends。runner 镜像普遍以
+        #   --no-install-recommends 构建，会漏装它，于是链接期报
+        #   “cannot find libclang_rt.ubsan_standalone-x86_64.a”，make check 直接 Error 2。
+        # 本步骤先探测能否链接，缺则按版本安装 libclang-rt-<major>-dev 兜底。
+        if: matrix.cxx == 'clang++'
+        run: |
+          set -e
+          printf 'int main(){return 0;}\n' > /tmp/ubsan_probe.cc
+          if clang++ -fsanitize=undefined /tmp/ubsan_probe.cc -o /tmp/ubsan_probe 2>/dev/null; then
+            echo "clang UBSan runtime already available"
+            exit 0
+          fi
+          CLANG_MAJOR=$(clang++ -dumpversion | cut -d. -f1)
+          echo "clang UBSan runtime missing -> installing libclang-rt-${CLANG_MAJOR}-dev"
+          sudo apt-get update -y
+          sudo apt-get install -y "libclang-rt-${CLANG_MAJOR}-dev"
+          clang++ -fsanitize=undefined /tmp/ubsan_probe.cc -o /tmp/ubsan_probe
+          echo "clang UBSan runtime installed (clang ${CLANG_MAJOR})"
 
       - name: Regular build (no sanitizer)
         # 快速暴露普通编译错误/警告；-O0 默认，覆盖常规发布前路径。
