@@ -59,12 +59,14 @@ jobs:
       - name: Build & run full test suite with UBSan
         # make check 会 clean 后以 -fsanitize=undefined -fno-sanitize-recover=all -g -O1 重建，
         # 并运行 tests/run_tests.sh（含 fork 隔离的栈溢出测试、IO 并发 CPU 断言等）。
-        # 注：捕获完整输出并把关键错误行作为 annotation 发出，便于在 Actions 页面/WebFetch 诊断。
+        # 注：捕获完整输出，并把「逐测结果（=== / exit= / PASS/FAIL）+ 关键错误行」作为
+        # annotation 发出，便于在 Actions 页面/API 诊断失败的具体用例（日志正文需 admin 权限）。
         run: |
           set +e
           make check CXX=${{ matrix.cxx }} 2>&1 | tee /tmp/check.log
           RC=${PIPESTATUS[0]}
-          echo "----- key error lines (if any) -----"
-          grep -E "error:|runtime error:|SUMMARY:|UndefinedBehaviorSanitizer|Segmentation fault|Assertion" /tmp/check.log | head -40 || true
-          grep -E "error:|runtime error:|SUMMARY:|UndefinedBehaviorSanitizer" /tmp/check.log | head -20 | while IFS= read -r l; do echo "::error::${l}"; done
+          echo "make check exit=$RC"
+          echo "----- per-test summary + key errors -----"
+          grep -nE "^=== |^exit=|FAIL|PASS:|SOME TESTS FAILED|ALL TESTS PASS|runtime error|SUMMARY:|error:|Segmentation fault" /tmp/check.log \
+            | head -80 | while IFS= read -r l; do echo "::error::${l}"; done
           exit $RC
