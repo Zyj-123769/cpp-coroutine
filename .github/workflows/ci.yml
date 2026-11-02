@@ -59,14 +59,46 @@ jobs:
       - name: Build & run full test suite with UBSan
         # make check 会 clean 后以 -fsanitize=undefined -fno-sanitize-recover=all -g -O1 重建，
         # 并运行 tests/run_tests.sh（含 fork 隔离的栈溢出测试、IO 并发 CPU 断言等）。
-        # 注：捕获完整输出，并把「逐测结果（=== / exit= / PASS/FAIL）+ 关键错误行」作为
-        # annotation 发出，便于在 Actions 页面/API 诊断失败的具体用例（日志正文需 admin 权限）。
+        # 诊断通道：GitHub 每个 step 最多只保留 10 条 annotation，逐行走 annotation 会被截断，
+        # 因此改为写入 $GITHUB_STEP_SUMMARY —— 它落在 check-run 的 output.summary 字段，
+        # 无需登录即可读取，且内容长度不受 annotation 上限限制。
         run: |
           set +e
           make check CXX=${{ matrix.cxx }} 2>&1 | tee /tmp/check.log
           RC=${PIPESTATUS[0]}
           echo "make check exit=$RC"
-          echo "----- per-test summary + key errors -----"
-          grep -nE "^=== |^exit=|FAIL|PASS:|SOME TESTS FAILED|ALL TESTS PASS|runtime error|SUMMARY:|error:|Segmentation fault" /tmp/check.log \
-            | head -80 | while IFS= read -r l; do echo "::error::${l}"; done
+
+          SUMMARY="$GITHUB_STEP_SUMMARY"
+          {
+            echo "## UBSan suite (${{ matrix.cxx }}) — make check exit=${RC}"
+            echo ""
+            echo '```'
+            ${{ matrix.cxx }} --version 2>/dev/null | head -1
+            echo "nproc=$(nproc)  ulimit_n=$(ulimit -n)"
+            echo '```'
+            echo ""
+            echo "### 逐测结果（run_tests.sh 汇总行）"
+            echo '```'
+            grep -nE "^=== |^exit=|FAIL|PASS:|SOME TESTS FAILED|ALL TESTS PASS|runtime error|SUMMARY:|error:|Segmentation fault" \
+              /tmp/check.log | tail -80 || true
+            echo '```'
+            echo ""
+            echo "### 每个测试的实际 stdout（各取末 6 行）"
+            for f in /tmp/out_*.log; do
+              [ -f "$f" ] || continue
+              echo "#### ${f##*/out_}"
+              echo '```'
+              tail -6 "$f" || true
+              echo '```'
+            done
+            echo ""
+            echo "### 编译/sanitizer 关键错误行"
+            echo '```'
+            grep -nE "error:|runtime error:|UndefinedBehaviorSanitizer|SUMMARY:|Assertion|Segmentation fault" \
+              /tmp/check.log | head -40 || true
+            echo '```'
+          } >> "$SUMMARY"
+
+          # 只发一条 annotation 作为指针，避免触发 10 条上限而把关键信息挤掉
+          echo "::error::UBSan suite failed (exit=${RC})${{ matrix.cxx }} — 详情见本 step 的 Summary"
           exit $RC
