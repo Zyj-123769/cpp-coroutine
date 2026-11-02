@@ -122,12 +122,18 @@ Fiber::~Fiber() {
     --s_fiber_count;
     if (m_stack) {
         // 子协程：只要不再被执行（非 EXEC），其独立栈均可安全释放。
-        // HOLD/READY 态的协程因引用计数归零而被析构是安全的（无人会再 resume 它），
-        // 但 EXEC 态说明栈仍在被使用，属于真正错误。
+        // HOLD/READY 态的协程因引用计数归零而被析构是安全的（无人会再 resume 它）。
         if (m_state == EXEC) {
-            LOG_WARN() << "Fiber destroyed while EXEC, id=" << m_id;
+            // EXEC 说明这块栈上此刻还压着正在执行的代码（返回地址、局部变量都在里面）。
+            // 若照旧 munmap，对方下一次 ret / 访问局部变量就会踩到已解除映射的地址，
+            // 表现为随机 SIGSEGV，极难定位。这是不可恢复的编程错误（典型成因：协程内部
+            // 释放了指向自身的最后一个 shared_ptr），因此这里既不释放栈，也不在析构中
+            // 抛异常/终止进程 —— 宁可泄漏一份栈，把「必然崩溃」降级为「明确日志 + 可诊断」。
+            LOG_ERROR() << "Fiber destroyed while EXEC (stack still in use), leak stack to "
+                           "avoid use-after-free, id=" << m_id;
+        } else {
+            StackAllocator::Dealloc(m_stack, m_stacksize);
         }
-        StackAllocator::Dealloc(m_stack, m_stacksize);
     } else {
         // 主协程
         if (m_cb) {

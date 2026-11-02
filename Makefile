@@ -17,7 +17,7 @@ SRCS := $(wildcard src/*.cpp)
 OBJS := $(SRCS:.cpp=.o)
 
 TARGETS := test_fiber test_scheduler test_timer test_ioscheduler test_hook \
-	test_io_concurrency test_fiber_exception test_stack_overflow \
+	test_io_concurrency test_fiber_exception test_stack_overflow test_multithread \
 	echo_server bench_http_server bench_native_http_server
 
 .PHONY: all clean
@@ -53,6 +53,9 @@ test_fiber_exception: tests/test_fiber_exception.cpp $(OBJS)
 
 test_stack_overflow: tests/test_stack_overflow.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) tests/test_stack_overflow.cpp $(OBJS) $(LDFLAGS) -o $@
+
+test_multithread: tests/test_multithread.cpp $(OBJS)
+	$(CXX) $(CXXFLAGS) tests/test_multithread.cpp $(OBJS) $(LDFLAGS) -o $@
 
 echo_server: examples/echo_server.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) examples/echo_server.cpp $(OBJS) $(LDFLAGS) -o $@

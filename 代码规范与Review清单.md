@@ -184,3 +184,34 @@
 ### 6.3 其他平台 / 本地
 - **GitLab CI**：可等价为根目录 `.gitlab-ci.yml`（`stage: build/test`，`image: gcc:bookworm`，脚本同上 `make` + `make check`）。当前未提供，按需迁移。
 - **本地（Windows 开发者）**：仍可用既有 `Dockerfile` + `docker_verify.sh` 在 Docker 内复现以上验证。
+
+---
+
+## 七、第二轮 Review 意见（P0–P3）逐条核实结论（2026-11-02）
+
+对第二批 Review 意见**逐条回到代码核对**后的处置，避免"看着像问题"就当问题改：
+
+| # | 原意见 | 核实结论 | 处置 |
+| --- | --- | --- | --- |
+| 1 | `sleep/usleep/nanosleep` 返回值语义丢失 | **部分成立**：不是逻辑 bug（hook 挂起的是协程，不会被信号提前唤醒，所以"恒睡满"是自洽的）；但 `nanosleep` 的 `rem` 被完全忽略，调用方可能读到栈上脏值 | 补语义注释（明确"不会返回 EINTR"）；成功时把 `rem` 清零；顺带修掉 `seconds * 1000` 的 32 位溢出（改 `uint64_t`） |
+| 2 | `do_io` 中 `goto retry` 后定时器/事件未重注册，可能触发 `events & event` 断言 | **不成立**：唤醒路径必然经过 `FdContext::triggerEvent()`，它在调度等待者之前执行 `events = events & ~event`；`cancelEvent` 同样走 `triggerEvent`。因此 retry 再 EAGAIN 时注册位是干净的 | 逻辑不改，**按建议补注释**说明这一隐含依赖（改动 `triggerEvent` 时必须同步检查） |
+| 3 | `FdManager::get` 的 `resize(fd * 1.5)` 边界 | **不成立**：`fd >= size` 分支下 `1.5 * fd > fd`，原式安全 | 采纳可读性改进：改为 `max(fd + 1, size * 1.5)` |
+| 4 | `FdCtx::init()` 未检查 `fcntl` 返回值 | **成立（真隐患）**：失败仍置 `m_sysNonblock = true`，会让 `do_io` 以为 read 永不阻塞，实际把**调度线程卡死** | 已修：检查 `F_GETFL` / `F_SETFL` 返回值，失败 `LOG_ERROR` 并如实置 `false` |
+| 5 | `Thread::~Thread()` detach 与 `join()` 竞态 | **不成立**：`run()` 在 notify 之前已把 `m_cb` swap 到局部变量，线程此后不再访问 Thread 成员 | 设计不改，**补头文件注释**说明"析构后线程可能仍在跑，但已不访问本对象" |
+| 6 | `idle()` 的 `epoll_event` 用堆 + 智能指针多余 | **成立（可简化）**：256 × 12B ≈ 3KB，远小于 128KB 协程栈 | 已改为栈数组 `epoll_event events[MAX_EVENTS];`，去掉 `new[]` 与自定义 deleter |
+| 7 | `Fiber::~Fiber()` 对 EXEC 态只 WARN 仍释放栈 | **成立（真隐患）**：栈上还压着正在执行的返回地址/局部变量，`munmap` 后退栈即随机 SIGSEGV | 已修：EXEC 态**不再释放**该栈（`LOG_ERROR` + 泄漏一份栈）。**未采用 `terminate`**：`SYLAR_ASSERT` 是 `throw`，在析构里抛异常会直接 terminate 且丢失上下文；库代码在析构里终止进程也过于激进。泄漏把"必然崩溃"降级为"明确日志 + 可诊断" |
+| 8 | 旧式 `typedef` 统一改 `using` | **不成立**（纯风格，无功能影响） | **不采纳**：13 个头文件全量替换的 churn 与 review 成本高于收益，且与现有风格一致性比"现代化"更重要 |
+| 9 | `hook.cpp` 的 `timer_info` 落在全局命名空间 | **成立**：.cpp 内全局结构体有外部链接，污染符号表 | 已移入**匿名命名空间** |
+| 10 | `getsockopt` hook 空实现缺说明 | **成立（缺注释）** | 已补注释：仅为 PLT 拦截完整性而存在，全部透传 |
+| 11 | 缺 `shutdown`/`pipe`/`eventfd` 等 hook | **部分成立**：不是 bug（这些 fd 不注册 `FdCtx` 时 `read/write` 本就该透传），但**文档缺口真实存在** | README 新增「Hook 覆盖范围」清单：已 hook 表格 + 已知未 hook（`shutdown`/`pipe`/`socketpair`/`eventfd`/`sendfile`/`splice`…）+ 语义差异说明 |
+| 12 | 测试缺口（多线程调度器 / 循环定时器 / connect 超时 / mutex） | **部分成立**：原文称"所有测试都是 1 线程"**不准确**——`test_scheduler` 已用 `Scheduler sc(2, true, ...)`；但 `IOManager` 多线程、`recurring` 定时器、同步原语确实无覆盖 | 新增 `tests/test_multithread.cpp`：4 worker 线程 + 64 协程跨线程挂起/唤醒 + 5 次循环定时器自取消 + Mutex 跨线程累加 + `Thread` 名称传递。`connect` 超时用例**未加**（依赖不可达地址与网络行为，CI 环境易 flaky，留作 TODO） |
+| 13 | benchmark 缺压测数据 | **成立但本轮未做** | 需要真实机器 + `ab` 才有说服力，沙箱/CI 数据不具代表性 → 留 TODO |
+| 14 | 缺 `__tsan_switch_to_fiber` 注解 | **成立但本轮未做** | 需实测验证 TSan 与 dlsym hook 的交互，改动风险高 → 保持实验性入口（`tsan.yml` + `make check-tsan`），已在 README 诚实说明 |
+
+**验证（本轮改动）**：
+- `ubuntu:24.04 + clang 18.1.3`（与 CI 同版本）`: make check CXX=clang++` → **9 个测试全过 / ALL TESTS PASS / 0 warning**；
+  `test_multithread` 实测 `workers=4 woken=64/64 recurring_ticks=5 distinct_threads=4`、`mutex counter=80000 expect=80000`、`thread name probe: probe/renamed`。
+- 同镜像 `make check CXX=g++`（GCC 13）→ **ALL TESTS PASS / 0 warning**。
+- UBSan（`-fsanitize=undefined -fno-sanitize-recover=all -O1`）下两编译器均无未定义行为报告。
+
+**一句话总结**：14 条里 **6 条真需要改**（#4、#6、#7、#9、#10、#11 文档）、**2 条部分成立并按更稳妥的方式处理**（#1、#12）、**5 条经核实不成立或属风格取舍**（#2、#3、#5、#8，以及 #3 的可读性改进）；#13、#14 属"成立但本轮不做"的后续项。

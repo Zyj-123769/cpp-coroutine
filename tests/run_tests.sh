@@ -4,7 +4,7 @@ set -u
 cd "$(dirname "$0")/.."
 
 TESTS="test_fiber test_scheduler test_timer test_ioscheduler test_hook
-       test_io_concurrency test_fiber_exception test_stack_overflow"
+       test_io_concurrency test_fiber_exception test_stack_overflow test_multithread"
 
 fail=0
 for t in $TESTS; do

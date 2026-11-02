@@ -126,11 +126,32 @@ int main() {
 
 见 [`examples/echo_server.cpp`](examples/echo_server.cpp)：业务代码直接写 `read(fd, ...)` / `write(fd, ...)` / `accept(...)`，配合 `hook.h` 被 IO 调度器接管为「协程级阻塞」，无需手动管理 epoll 回调。
 
+#### Hook 覆盖范围
+
+**已 hook（会挂起协程而非阻塞线程）**：
+
+| 类别 | 函数 |
+| --- | --- |
+| 睡眠 | `sleep`、`usleep`、`nanosleep` |
+| 套接字建立 | `socket`、`connect`（默认无限超时）、`accept` |
+| 读 | `read`、`readv`、`recv`、`recvfrom`、`recvmsg` |
+| 写 | `write`、`writev`、`send`、`sendto`、`sendmsg` |
+| 其他 | `close`、`fcntl`、`ioctl`、`setsockopt`、`getsockopt`（后两者仅做簿记/透传） |
+
+**已知不 hook（需要自行注意）**：
+
+- `shutdown()`：业务想优雅半关闭时，不会被协程感知；`shutdown` 本身不阻塞，通常无影响，但不要在依赖挂起语义的逻辑里假设它被接管。
+- `pipe()` / `socketpair()` / `eventfd()` / `memfd_create()`：这些方式创建的 fd **不会自动注册 `FdCtx`**，因此其上的 `read`/`write` 走真实系统调用（阻塞线程）。若要在协程里等待它们，需手动 `FdMgr::GetInstance()->get(fd, true)` 补注册（见 `tests/test_io_concurrency.cpp`）。
+- `sendfile()` / `splice()` / `sendmmsg()` / `recvmmsg()`：未拦截，会阻塞调度线程。
+- 仅对 **socket** 生效：`do_io` 会检查 `ctx->isSocket()`，普通文件 / 管道上的 read/write 一律透传。
+
+> 语义差异：hook 版 `sleep`/`usleep`/`nanosleep` 挂起的是协程而非线程，不会被信号提前唤醒，因此**恒等于「睡满整个时长」**：返回 0、`rem` 置 0，不会出现 `EINTR`。
+
 ---
 
 ## 🧪 测试与 CI
 
-- **测试集**（`tests/`，由 `tests/run_tests.sh` 统一运行）：覆盖协程切换、调度器、IO 并发（1000 挂起协程 CPU 占用验证）、定时器精度、hook（usleep 实测时长）、异常隔离、栈溢出保护。
+- **测试集**（`tests/`，由 `tests/run_tests.sh` 统一运行）：覆盖协程切换、调度器、IO 并发（1000 挂起协程 CPU 占用验证）、定时器精度、hook（usleep 实测时长）、异常隔离、栈溢出保护、多线程 `IOManager` + 循环定时器 + `Thread`/`Mutex` 同步原语。
 - **CI**：[`.github/workflows/ci.yml`](.github/workflows/ci.yml) 在每次 push / PR 于 GitHub 托管的 `ubuntu-latest` 上，用 **g++ 与 clang++ 双编译器矩阵** 跑 `make` + `make check`（UBSan 全量测试）。
 - **ThreadSanitizer（实验）**：[`.github/workflows/tsan.yml`](.github/workflows/tsan.yml) 提供手动触发的 TSan 入口（`make check-tsan`）。默认未设为门禁，因为 TSan 需配合协程切换处的 `__tsan_switch_to_fiber` 注解才能正确识别 `swapcontext` 的栈切换；相关适配完成后可转正为常驻门禁。
 

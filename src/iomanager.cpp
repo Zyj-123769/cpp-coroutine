@@ -271,11 +271,11 @@ bool IOManager::stopping() {
 }
 
 void IOManager::idle() {
-    const uint64_t MAX_EVENTS = 256;
-    epoll_event* events = new epoll_event[MAX_EVENTS]();
-    std::shared_ptr<epoll_event> shared_events(events, [](epoll_event* ptr) {
-        delete[] ptr;
-    });
+    // 256 ≈ 3KB，直接放栈上：idle() 运行在 128KB 的调度协程栈里，容量绰绰有余，
+    // 没必要为此做一次堆分配再配一个自定义 deleter 的 shared_ptr。
+    // 数组在 while 外声明，整个 idle 生命周期内复用，不会被反复构造。
+    const int MAX_EVENTS = 256;
+    epoll_event events[MAX_EVENTS];
 
     while (true) {
         uint64_t next_timeout = 0;

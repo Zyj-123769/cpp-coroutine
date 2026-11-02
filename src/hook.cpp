@@ -69,10 +69,13 @@ void set_hook_enable(bool flag) {
 
 } // namespace sylar
 
-// 定时器超时信息（供 do_io / connect 使用）
+namespace {
+// 定时器超时信息（供 do_io / connect 使用）。
+// 放在匿名命名空间：它只是本编译单元的实现细节，不该以全局符号形式外泄。
 struct timer_info {
     int cancelled = 0;
 };
+} // namespace
 
 // 通用 IO 挂起模板：非阻塞尝试 -> 未就绪则挂到 IOManager 的 fd 事件并 yield
 template<typename OriginFun, typename... Args>
@@ -141,6 +144,12 @@ retry:
                 errno = tinfo->cancelled;
                 return -1;
             }
+            // goto retry 之前不需要显式 delEvent：无论本次是被「IO 就绪」还是
+            // 「定时器超时」唤醒，唤醒路径都必然经过 FdContext::triggerEvent()，
+            // 而它在调度等待者之前执行 `events = events & ~event` 清掉了注册位。
+            // 因此 retry 若再次 EAGAIN，addEvent 看到的是「该事件未被注册」，
+            // 不会触发 "events & event 冲突" 的断言。这是本函数对 IOManager 的
+            // 隐含依赖 —— 若将来改动 triggerEvent 的清位时机，这里必须同步检查。
             goto retry;
         }
     }
@@ -153,6 +162,12 @@ extern "C" {
     HOOK_FUN(XX);
 #undef XX
 
+// 语义说明（sleep/usleep/nanosleep 三者相同）：
+//   真实 syscall 在「被信号打断」时会提前返回，并给出剩余时间（sleep 的返回值、
+//   nanosleep 的 rem）。hook 版挂起的是**协程**而非线程，调度器不会被信号提前唤醒，
+//   因此行为上恒等于「睡满整个时长」：返回 0，剩余时间为 0。
+//   依赖「被信号打断后重试」的 retry 写法（while (nanosleep(...) == -1 && errno == EINTR)）
+//   不受影响 —— 因为根本不会返回 EINTR。
 unsigned int sleep(unsigned int seconds) {
     if (!sylar::t_hook_enable) {
         return sleep_f(seconds);
@@ -163,11 +178,11 @@ unsigned int sleep(unsigned int seconds) {
         return sleep_f(seconds);
     }
     // 睡眠到点时重新调度当前协程
-    iom->addTimer(seconds * 1000, [iom, fiber]() {
+    iom->addTimer((uint64_t)seconds * 1000, [iom, fiber]() {
         iom->schedule(fiber);
     });
     sylar::Fiber::YieldToHold();
-    return 0;
+    return 0;   // 恒为 0：不会被信号打断，不存在「未睡完的秒数」
 }
 
 int usleep(useconds_t usec) {
@@ -202,6 +217,13 @@ int nanosleep(const struct timespec* req, struct timespec* rem) {
         iom->schedule(fiber);
     });
     sylar::Fiber::YieldToHold();
+    if (rem) {
+        // POSIX 只规定「被打断时」rem 才有意义，成功时内容未定义；这里显式清零，
+        // 避免调用方读到栈上的脏值，也如实表达「一点都不剩」。注意 rem 可能与 req
+        // 同一块内存，故必须在上面算完 timeout_ms 之后再写。
+        rem->tv_sec = 0;
+        rem->tv_nsec = 0;
+    }
     return 0;
 }
 
@@ -469,6 +491,9 @@ int ioctl(int d, unsigned long int request, ...) {
     return ioctl_f(d, request, arg);
 }
 
+// getsockopt 不做任何逻辑处理，仅为「PLT 拦截完整性」而存在：
+// connect_with_timeout 需要在同一编译单元内拿到系统实现，同时也避免将来若要在
+// 此处派生状态（如缓存 SO_ERROR）时忘记加符号。所有调用原样透传。
 int getsockopt(int sockfd, int level, int optname, void* optval, socklen_t* optlen) {
     return getsockopt_f(sockfd, level, optname, optval, optlen);
 }
